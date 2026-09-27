@@ -1,0 +1,1276 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[spanish]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{longtable}
+\usepackage{pgfplots}
+
+\pgfplotsset{
+    miEstandar/.style={
+        width=0.85\textwidth,
+        height=0.50\textwidth,
+        line width=1pt,
+        grid style={dashed, gray!30},
+        ymajorgrids=true,
+        xmajorgrids=true,
+        tick label style={font=\small},
+        label style={font=\small\bfseries},
+        title style={font=\large\bfseries},
+        legend style={font=\small, fill=white, fill opacity=0.85, draw=gray!50, text opacity=1}
+    }
+}
+
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+
+% Configuración de colores para código
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.96,0.96,0.96}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+\lstset{style=mystyle}
+
+\title{\textbf{Informe de Laboratorio 5: Programación con Pthreads, Concurrencia y Sincronización}}
+\author{\textbf{Asignatura:} Programación Paralela y Distribuida \\ \textbf{Autor:} Estudiante}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+El presente informe documenta la implementación, evaluación y análisis del rendimiento de aplicaciones concurrentes utilizando la librería POSIX Threads (Pthreads) en C++. Se estudian cuatro problemas clave de la computación paralela: la aproximación del número $\pi$ mediante la serie de Leibniz, la multiplicación matriz-vector, una estructura de datos dinámica (lista enlazada compartida) y tres mecanismos alternativos de sincronización por barreras. Se evalúan los métricos de tiempo de ejecución, \textit{speedup} y eficiencia al variar el número de hilos ($1, 2, 4, 8$) y el tamaño del problema ($N$), analizando las causas de pérdida de aceleración, condiciones de carrera y cuellos de botella en memoria compartida.
+\end{abstract}
+
+\section{Introducción}
+La programación multihilo representa un paradigma fundamental para aprovechar las arquitecturas multinúcleo modernas. Sin embargo, la división de tareas en hilos concurrentes introduce desafíos críticos como la fragmentación del trabajo, la coherencia de cache, la contención de cerrojos y las condiciones de carrera (\textit{race conditions}). Este laboratorio explora la transición desde algoritmos secuenciales hacia versiones paralelas mediante Pthreads, analizando el comportamiento de la sincronización por exclusión mutua (\textit{mutex}), cerrojos de grano fino/grueso y barreras explícitas de sincronización.
+
+
+
+
+
+
+\section{Entorno de Ejecución y Características del Equipo}
+
+Para garantizar la reproducibilidad de los experimentos y comprender el comportamiento del hardware frente a la ejecución multihilo, las pruebas se llevaron a cabo en el siguiente entorno físico y de software:
+
+\begin{itemize}
+    \item \textbf{Procesador:} AMD Ryzen 5 3600 (Arquitectura Matisse, 7 nm).
+    \begin{itemize}
+        \item \textbf{Núcleos / Hilos:} 6 núcleos físicos / 12 hilos lógicos (\textit{Simultaneous Multithreading} - SMT habilitado).
+        \item \textbf{Frecuencia Base:} $3.60$ GHz ($3592.47$ MHz).
+        \item \textbf{Memoria Caché:}
+        \begin{itemize}
+            \item Caché L1 (Datos e Instrucciones): $6 \times 32$ KB cada una (8-way).
+            \item Caché L2: $6 \times 512$ KB (8-way).
+            \item Caché L3: $2 \times 16$ MB (16-way).
+        \end{itemize}
+    \end{itemize}
+    
+    \item \textbf{Memoria RAM:} 16 GB DDR4 operando en Doble Canal (\textit{Dual Channel}, $2 \times 64$-bit).
+    \begin{itemize}
+        \item \textbf{Frecuencia DRAM:} $1197.3$ MHz (Velocidad efectiva de $2400$ MT/s).
+        \item \textbf{Latencia CAS (CL):} 16.0 \textit{clocks}.
+    \end{itemize}
+
+    \item \textbf{Sistema Operativo:} Microsoft Windows (x64).
+    \item \textbf{Entorno de Compilación:} GCC/g++ (MinGW-w64) con la librería POSIX Threads para Windows (\texttt{winpthreads}) bajo banderas de optimización \texttt{-O2 -pthread}.
+\end{itemize}
+
+
+\section{Parte I — Cálculo de $\pi$ con Pthreads}
+
+\subsection{Estrategia de Paralelización e Implementación}
+Para la aproximación del valor de $\pi$, se empleó la serie de Leibniz:
+\begin{equation}
+\pi \approx 4 \sum_{i=0}^{N-1} \frac{(-1)^i}{2i + 1}
+\end{equation}
+
+En la solución desarrollada en \texttt{pi\_2.cpp}, se dividió el espacio de iteraciones $N$ entre la cantidad de hilos mediante una distribución estática por bloques. Se definió un tamaño base de segmento (\texttt{segmentSize = size / nThreads}) asignado de forma equitativa a cada hilo. Para asegurar que ninguna iteración quede excluida cuando $N$ no es divisible exactamente entre el número de hilos, el último hilo absorbe el residuo sumando el resto de la división (\texttt{size \% nThreads}).
+
+\subsection{Análisis de Sincronización y Variables}
+\begin{itemize}
+    \item \textbf{Variables Privadas:} Cada hilo gestiona sus propias variables locales dentro de la función \texttt{leibniz\_serie\_par}: el índice $i$, los límites del rango (\texttt{startIdx} y \texttt{size}) y el acumulador temporal \texttt{double sum = 0.0} almacenado en la pila (\textit{stack}) del hilo.
+    \item \textbf{Variables Compartidas:} El acumulador global de la suma final (accedido mediante el puntero \texttt{data->sum}) y el cerrojo de exclusión mutua \texttt{pMutex}.
+    \item \textbf{Sección Crítica:} La sección crítica se localiza en la actualización de la suma global (\texttt{*(data->sum) += sum;}). Se resolvió protegiendo dicha instrucción con \texttt{pthread\_mutex\_\allowbreak lock} y \texttt{pthread\_mutex\_unlock}. Dado que la acumulación pesada se ejecuta sobre variables locales y el acceso al cerrojo ocurre \textbf{una sola vez por hilo al finalizar su bloque}, se eliminan las condiciones de carrera sin degradar el rendimiento.
+\end{itemize}
+
+\subsection{Respuestas a Preguntas de Análisis}
+\begin{enumerate}
+    \item \textbf{¿Cómo se distribuyó el trabajo?}
+    El trabajo se distribuyó asignando bloques contiguos de iteraciones a cada hilo. Cada uno procesa un segmento que inicia en el índice \texttt{i * segmentSize}. En el último hilo se incluye el residuo de la división para garantizar el cálculo de todos los términos de la serie.
+
+    \item \textbf{¿Qué variables son compartidas y cuáles son privadas?}
+    Son privadas las variables de ámbito local de cada hilo (acumulador parcial, índices de bucle y la estructura \texttt{Data} pasada a la función). Son compartidas la variable global de suma acumulada y el cerrojo \texttt{pMutex}.
+
+    \item \textbf{¿Existe una sección crítica? ¿Cómo se resolvió?}
+    Sí, la modificación del resultado global. Se resolvió mediante un cerrojo \texttt{pthread\_mutex\_t}. Al ubicar la sincronización fuera del bucle de cálculo principal, la contención sobre el cerrojo resulta mínima.
+
+    \item \textbf{¿Qué ocurre con el tiempo al aumentar el número de hilos?}
+    Para valores de $N$ elevados ($N \ge 10^6$), el tiempo de ejecución decrece de manera sostenida al escalar el número de hilos, aprovechando los núcleos físicos disponibles en el procesador.
+
+    \item \textbf{¿Por qué puede dejar de mejorar el rendimiento al aumentar los hilos?}
+    Al superar la cantidad de núcleos físicos, entran en juego los hilos lógicos vía SMT, los cuales comparten unidades de ejecución de punto flotante (FPU) dentro del mismo núcleo, lo que estabiliza las ganancias de rendimiento. Si se supera el límite total de hilos soportados por el procesador, el tiempo de ejecución se degrada debido a la sobrecarga impuesta por los cambios de contexto (\textit{context switching}) en el planificador del sistema operativo.
+\end{enumerate}
+
+\subsection{Resultados Experimentales y Tablas}
+
+A continuación se presentan los datos recolectados durante la ejecución del programa de cálculo de $\pi$ (\texttt{pi.cpp}), comparando el tiempo secuencial ($t_{seq}$) con el tiempo paralelo ($t_{par}$), el \textit{Speedup} ($S = t_{seq} / t_{par}$) y la Eficiencia ($E = S / P$) para $P \in \{1, 2, 4, 8\}$ hilos.
+
+\renewcommand{\arraystretch}{1.35}
+\small
+\begin{longtable}{ccrrrr}
+% --- Encabezado de la PRIMERA página ---
+\caption{Resultados experimentales para la ejecución paralela en el cálculo de $\pi$.} \label{tab:resultados_pi} \\
+\hline
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{$t_{seq}$ (s)} & \textbf{$t_{par}$ (s)} & \textbf{Speedup ($S$)} & \textbf{Eficiencia ($E$)} \\ \hline
+\endfirsthead
+
+% --- Encabezado de las PÁGINAS SIGUIENTES (Continuación) ---
+\multicolumn{6}{c}{\small \textit{Cuadro \thetable{} -- Continuación de la página anterior}} \\[0.5em]
+\hline
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{$t_{seq}$ (s)} & \textbf{$t_{par}$ (s)} & \textbf{Speedup ($S$)} & \textbf{Eficiencia ($E$)} \\ \hline
+\endhead
+
+% --- Pie al final de páginas intermedias ---
+\hline
+\multicolumn{6}{r}{\textit{Continúa en la siguiente página...}} \\
+\endfoot
+
+% --- Pie al final de la última página de la tabla ---
+\hline
+\endlastfoot
+
+% --- CUERPO DE LA TABLA ---
+\multirow{10}{*}{1} 
+ & $10^1$ & 0.0000001 & 0.0006608 & 0.00015 & 0.00015 \\
+ & $10^2$ & 0.0000001 & 0.0001197 & 0.00084 & 0.00084 \\
+ & $10^3$ & 0.0000013 & 0.0001473 & 0.00883 & 0.00883 \\
+ & $10^4$ & 0.0000126 & 0.0001655 & 0.07613 & 0.07613 \\
+ & $10^5$ & 0.0001264 & 0.0002686 & 0.47059 & 0.47059 \\
+ & $10^6$ & 0.0012884 & 0.0013784 & 0.93471 & 0.93471 \\
+ & $10^7$ & 0.0127177 & 0.0128737 & 0.98788 & 0.98788 \\
+ & $10^8$ & 0.1288206 & 0.1320156 & 0.97580 & 0.97580 \\
+ & $10^9$ & 1.2912582 & 1.2807197 & 1.00823 & 1.00823 \\
+ & $10^{10}$ & 12.9642571 & 12.9731325 & 0.99932 & 0.99932 \\ \hline
+\multirow{10}{*}{2} 
+ & $10^1$ & 0.0000001 & 0.0001975 & 0.00051 & 0.00025 \\
+ & $10^2$ & 0.0000001 & 0.0001463 & 0.00068 & 0.00034 \\
+ & $10^3$ & 0.0000013 & 0.0001385 & 0.00939 & 0.00469 \\
+ & $10^4$ & 0.0000126 & 0.0001465 & 0.08601 & 0.04300 \\
+ & $10^5$ & 0.0001264 & 0.0002740 & 0.46131 & 0.23066 \\
+ & $10^6$ & 0.0012884 & 0.0007874 & 1.63627 & 0.81814 \\
+ & $10^7$ & 0.0127177 & 0.0064650 & 1.96716 & 0.98358 \\
+ & $10^8$ & 0.1288206 & 0.0066452 & 1.93854 & 0.96927 \\
+ & $10^9$ & 1.2912582 & 0.6653701 & 1.94066 & 0.97033 \\
+ & $10^{10}$ & 12.9642571 & 6.9025356 & 1.87819 & 0.93909 \\ \hline
+\multirow{10}{*}{4} 
+ & $10^1$ & 0.0000001 & 0.0003227 & 0.00031 & 0.00008 \\
+ & $10^2$ & 0.0000001 & 0.0002857 & 0.00035 & 0.00009 \\
+ & $10^3$ & 0.0000013 & 0.0002865 & 0.00454 & 0.00113 \\
+ & $10^4$ & 0.0000126 & 0.0002616 & 0.04817 & 0.01204 \\
+ & $10^5$ & 0.0001264 & 0.0002716 & 0.46539 & 0.11635 \\
+ & $10^6$ & 0.0012884 & 0.0008730 & 1.47583 & 0.36896 \\
+ & $10^7$ & 0.0127177 & 0.0038385 & 3.31320 & 0.82830 \\
+ & $10^8$ & 0.1288206 & 0.0540053 & 2.38533 & 0.59633 \\
+ & $10^9$ & 1.2912582 & 0.4403497 & 2.93235 & 0.73309 \\
+ & $10^{10}$ & 12.9642571 & 4.0821348 & 3.17585 & 0.79396 \\ \hline
+\multirow{10}{*}{8} 
+ & $10^1$ & 0.0000001 & 0.0006084 & 0.00016 & 0.00002 \\
+ & $10^2$ & 0.0000001 & 0.0004605 & 0.00022 & 0.00003 \\
+ & $10^3$ & 0.0000013 & 0.0005092 & 0.00255 & 0.00032 \\
+ & $10^4$ & 0.0000126 & 0.0005287 & 0.02383 & 0.00298 \\
+ & $10^5$ & 0.0001264 & 0.0004725 & 0.26751 & 0.03344 \\
+ & $10^6$ & 0.0012884 & 0.0005398 & 2.38681 & 0.29835 \\
+ & $10^7$ & 0.0127177 & 0.0034497 & 3.68661 & 0.46083 \\
+ & $10^8$ & 0.1288206 & 0.0320895 & 4.01442 & 0.50180 \\
+ & $10^9$ & 1.2912582 & 0.2859009 & 4.51645 & 0.56456 \\
+ & $10^{10}$ & 12.9642571 & 2.5175918 & 5.14947 & 0.64368 \\
+\end{longtable}
+
+
+
+
+% -----------------------------------------------------------------
+% FIGURA 1: Tiempo de Ejecución (Secuencial vs. Paralelo)
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Tiempo de Ejecución: Secuencial vs. Paralelo ($N = 10^{10}$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Tiempo de ejecución (s)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=15,
+    xtick={1, 2, 4, 8},
+    ytick={0, 2, 4, 6, 8, 10, 12, 14},
+    legend pos=north east
+]
+
+% Línea de base: Tiempo Secuencial constante
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt,
+    domain=1:8,
+    samples=2
+]
+{13.2846};
+\addlegendentry{Tiempo Secuencial ($13.28\text{ s}$)}
+
+% Curva de Tiempo Paralelo
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 13.2846)
+    (2, 6.8477)
+    (4, 3.4776)
+    (8, 2.5795)
+};
+\addlegendentry{Tiempo Paralelo}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Comparación del tiempo de ejecución entre la versión secuencial y la versión paralela para $N = 10^{10}$ con $P \in \{1, 2, 4, 8\}$ hilos.}
+\label{fig:tiempo_secuencial_vs_paralelo_parte1}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+% FIGURA 2: Speedup Experimental vs. Ideal
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Speedup Experimental vs. Ideal ($N = 10^{10}$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Speedup ($S_P$)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=8,
+    xtick={1, 2, 4, 8},
+    ytick={0, 1, 2, 3, 4, 5, 6, 7, 8},
+    legend pos=north west
+]
+
+% Speedup Ideal (Referencia teórica)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1)
+    (2, 2)
+    (4, 4)
+    (8, 8)
+};
+\addlegendentry{Speedup Ideal ($S_P = P$)}
+
+% Speedup Experimental
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1.00)
+    (2, 1.94)
+    (4, 3.82)
+    (8, 5.15)
+};
+\addlegendentry{Speedup Experimental}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Escalabilidad del Speedup experimental obtenido para $N = 10^{10}$ frente a la aceleración lineal ideal.}
+\label{fig:speedup_parte1}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+% FIGURA 3: Eficiencia Paralela
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Eficiencia Paralela ($N = 10^{10}$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Eficiencia ($E_P$)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=1.1,
+    xtick={1, 2, 4, 8},
+    ytick={0, 0.2, 0.4, 0.6, 0.8, 1.0},
+    yticklabels={0\%, 20\%, 40\%, 60\%, 80\%, 100\%},
+    legend pos=south west
+]
+
+% Eficiencia Ideal (100%)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt,
+    domain=1:8,
+    samples=2
+]
+{1.0};
+\addlegendentry{Eficiencia Ideal ($100\%$)}
+
+% Eficiencia Experimental
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1.00)
+    (2, 0.970)
+    (4, 0.955)
+    (8, 0.644)
+};
+\addlegendentry{Eficiencia Experimental}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Degradación de la eficiencia paralela por hilo al escalar de $P=1$ a $P=8$ hilos en $N = 10^{10}$.}
+\label{fig:eficiencia_parte1}
+\end{figure}
+
+
+
+
+\begin{table}[H]
+\centering
+\caption{Resumen comparativo de \textit{Speedup} ($S$) para el cálculo de $\pi$.}
+\label{tab:resumen_speedup_pi}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{crrrr}
+\hline
+\textbf{$N$} & \textbf{$P = 1$} & \textbf{$P = 2$} & \textbf{$P = 4$} & \textbf{$P = 8$} \\ \hline
+$10^1$   & 0.00015 & 0.00051 & 0.00031 & 0.00016 \\
+$10^2$   & 0.00084 & 0.00068 & 0.00035 & 0.00022 \\
+$10^3$   & 0.00883 & 0.00939 & 0.00454 & 0.00255 \\
+$10^4$   & 0.07613 & 0.08601 & 0.04817 & 0.02383 \\
+$10^5$   & 0.47059 & 0.46131 & 0.46539 & 0.26751 \\
+$10^6$   & 0.93471 & 1.63627 & 1.47583 & 2.38681 \\
+$10^7$   & 0.98788 & 1.96716 & 3.31320 & 3.68661 \\
+$10^8$   & 0.97580 & 1.93854 & 2.38533 & 4.01442 \\
+$10^9$   & 1.00823 & 1.94066 & 2.93235 & 4.51645 \\
+$10^{10}$ & 0.99932 & 1.87819 & 3.17585 & 5.14947 \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Análisis de los Datos Experimentales}
+\begin{itemize}
+    \item \textbf{Sobrecostos para $N < 10^6$:} Para valores reducidos de $N$, la creación, sincronización y destrucción de los hilos imponen un sobrecosto (\textit{overhead}) que domina sobre el tiempo de cálculo real. Esto genera valores de \textit{Speedup} cercanos a 0 y eficiencias despreciables.
+    \item \textbf{Escalabilidad en Cargas Pesadas ($N \ge 10^7$):} A medida que $N$ crece, la carga computacional compensa los costos de administración de Pthreads. Con $P=2$ hilos se alcanza casi la aceleración ideal ($S \approx 1.94$, eficiencia del $97\%$).
+    \item \textbf{Impacto de la Arquitectura SMT:} Al evaluar con $P=8$ hilos, el programa alcanza un \textit{Speedup} máximo de aproximadamente $5.15$ para $N = 10^{10}$. La caída en la eficiencia individual respecto a 2 hilos se atribuye a la competencia de los hilos lógicos por las mismas unidades de punto flotante (FPU) dentro de los núcleos físicos del procesador.
+\end{itemize}
+
+
+
+
+
+
+\section{Parte II — Multiplicación Matriz-Vector con Pthreads}
+
+\subsection{Estrategia de Paralelización e Implementación}
+Para la multiplicación de una matriz $A \in \mathbb{R}^{N \times N}$ por un vector $x \in \mathbb{R}^N$ para obtener el vector resultado $y \in \mathbb{R}^N$, cada elemento $y_i$ se calcula mediante el producto escalar:
+\begin{equation}
+y_i = \sum_{j=0}^{N-1} A_{i,j} \cdot x_j \quad \text{para } i = 0, 1, \dots, N-1
+\end{equation}
+
+En la implementación realizada en \texttt{mat\_vect.cpp}, se explotó el paralelismo a nivel de filas mediante una \textbf{distribución estática por bloques}. El número total de filas $N$ se dividió equitativamente entre los $P$ hilos creados (\texttt{segmentSize = n / nThreads}). El último hilo asume las filas restantes (\texttt{n \% nThreads}) para prevenir la exclusión de iteraciones en casos donde $N$ no sea un múltiplo exacto de $P$.
+
+\subsection{Análisis de Sincronización y Variables}
+\begin{itemize}
+    \item \textbf{Variables Privadas:} Cada hilo gestiona de manera local los índices de iteración $i$ y $j$, los límites de su bloque (\texttt{startRow} y \texttt{numRows}) y la variable acumuladora temporal \texttt{int temp = 0} almacenada en el \textit{stack} del hilo.
+    \item \textbf{Variables Compartidas:} La matriz de entrada \texttt{mat}, el vector multiplicador \texttt{vect} y el vector de resultados \texttt{result} son compartidos mediante punteros leídos por todos los hilos.
+    \item \textbf{Sección Crítica y Mutex:} \textbf{No existe sección crítica} ni se requirió el uso de cerrojos (\texttt{pthread\_mutex\_t}). Dado que la asignación de filas a cada hilo es disjunta (los rangos $[i_{inicio}, i_{fin})$ no se solapan), cada hilo escribe exclusivamente en las posiciones del vector $y[i]$ que le corresponden. Por lo tanto, no hay posibilidad de condiciones de carrera (\textit{data races}).
+\end{itemize}
+
+\subsection{Respuestas a Preguntas de Análisis}
+\begin{enumerate}
+    \item \textbf{¿Por qué las filas constituyen una buena unidad de trabajo?}
+    Las filas son unidades de trabajo ideales porque en C++ los arreglos multidimensionales (como \texttt{std::vector\textless{}vector\textless{}T\textgreater{}\textgreater{}}) se almacenan en memoria de forma continua por filas (\textit{row-major order}). Esto favorece la localidad espacial de la memoria caché del procesador, optimizando los ciclos de \textit{prefetching}. Además, el cálculo de la fila $i$ del producto es matemáticamente independiente de cualquier otra fila, permitiendo una paralelización completa sin dependencias de datos.
+
+    \item \textbf{¿Es necesario utilizar un mutex para escribir el vector resultado? Justifique.}
+    No, no es necesario. Debido a que el espacio de filas se particiona de forma disjunta entre los hilos, no existen dos hilos intentando escribir sobre la misma posición del vector \texttt{result[i]}. Cada posición del arreglo de salida tiene un único hilo escritor asignado.
+
+    \item \textbf{¿Cómo cambia el rendimiento al aumentar el tamaño de la matriz?}
+    Para matrices pequeñas ($N \le 2000$), el tiempo de ejecución paralelo es dominado por el sobrecosto de creación y destrucción de hilos, resultando en un \textit{Speedup} menor a 1. A medida que $N$ aumenta ($N \ge 8000$), la complejidad computacional $\mathcal{O}(N^2)$ supera holgadamente la sobrecarga de administración de Pthreads, alcanzando aceleraciones significativas cercanas a la linealidad para 2 y 4 hilos.
+
+    \item \textbf{¿Qué ocurre cuando se utilizan más threads que núcleos disponibles?}
+    Si se generan más hilos que los núcleos físicos/lógicos del procesador, el planificador del sistema operativo se ve forzado a realizar cambios de contexto (\textit{context switching}). Esto degrada el rendimiento global debido al sobrecosto de guardar y restaurar estados en los registros, invalidando líneas de caché y aumentando el tiempo de ejecución paralelo.
+
+    \item \textbf{¿El speedup crece linealmente? Explique.}
+    No crece de manera puramente lineal. Aunque el problema carece de contención por cerrojos, el \textit{speedup} se ve limitado por el ancho de banda del bus de memoria (\textit{memory-bound problem}), ya que la lectura de una matriz de tamaño $N \times N$ genera un tráfico masivo hacia la memoria RAM. Además, los sobrecostos fijos de Pthreads y la saturación de las unidades de cálculo para $P=8$ hilos reducen la eficiencia global.
+\end{enumerate}
+
+\subsection{Resultados Experimentales y Tablas}
+
+A continuación se presentan los tiempos secuenciales ($t_{seq}$), tiempos paralelos ($t_{par}$), \textit{Speedup} ($S$) y Eficiencia ($E$) obtenidos para la multiplicación matriz-vector con $P \in \{1, 2, 4, 8\}$ hilos y tamaños de matriz $N \in \{1000, 2000, 4000, 8000, 16000, 32000\}$.
+
+\begin{center}
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{ccrrrr}
+\caption{Resultados experimentales para la multiplicación matriz-vector en paralelo.} \label{tab:resultados_mat_vect} \\
+\hline
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{$t_{seq}$ (s)} & \textbf{$t_{par}$ (s)} & \textbf{Speedup ($S$)} & \textbf{Eficiencia ($E$)} \\ \hline
+\endfirsthead
+
+\multicolumn{6}{c}{\textit{Cuadro \thetable{} -- Continuación de la página anterior}} \\[0.5em]
+\hline
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{$t_{seq}$ (s)} & \textbf{$t_{par}$ (s)} & \textbf{Speedup ($S$)} & \textbf{Eficiencia ($E$)} \\ \hline
+\endhead
+
+\hline
+\multicolumn{6}{r}{\textit{Continúa en la siguiente página...}} \\
+\endfoot
+
+\hline
+\endlastfoot
+
+\multirow{6}{*}{1} 
+ & 1000  & 0.0003857 & 0.0013486 & 0.2860003 & 0.2860003 \\
+ & 2000  & 0.0018129 & 0.0027202 & 0.6664583 & 0.6664583 \\
+ & 4000  & 0.0074473 & 0.0084082 & 0.8857187 & 0.8857187 \\
+ & 8000  & 0.0306334 & 0.0321431 & 0.9530319 & 0.9530319 \\
+ & 16000 & 0.1232309 & 0.1217360 & 1.0122799 & 1.0122799 \\
+ & 32000 & 0.4938257 & 0.5978966 & 0.8259383 & 0.8259383 \\ \hline
+\multirow{6}{*}{2} 
+ & 1000  & 0.0003857 & 0.0004417 & 0.8732171 & 0.4366086 \\
+ & 2000  & 0.0018129 & 0.0016450 & 1.1020669 & 0.5510334 \\
+ & 4000  & 0.0074473 & 0.0004654 & 1.6002278 & 0.8001139 \\
+ & 8000  & 0.0306334 & 0.0151008 & 2.0285945 & 1.0142973 \\
+ & 16000 & 0.1232309 & 0.0612059 & 2.0133827 & 1.0066913 \\
+ & 32000 & 0.4938257 & 0.2474600 & 1.9955779 & 0.9977889 \\ \hline
+\multirow{6}{*}{4} 
+ & 1000  & 0.0003857 & 0.0004859 & 0.7937847 & 0.1984462 \\
+ & 2000  & 0.0018129 & 0.0012657 & 1.4323299 & 0.3580825 \\
+ & 4000  & 0.0074473 & 0.0042685 & 1.7447113 & 0.4361778 \\
+ & 8000  & 0.0306334 & 0.0110729 & 2.7665201 & 0.6916300 \\
+ & 16000 & 0.1232309 & 0.0392242 & 3.1417059 & 0.7854265 \\
+ & 32000 & 0.4938257 & 0.1410353 & 3.5014333 & 0.8753583 \\ \hline
+\multirow{6}{*}{8} 
+ & 1000  & 0.0003857 & 0.0006678 & 0.5775681 & 0.0721960 \\
+ & 2000  & 0.0018129 & 0.0009150 & 1.9813115 & 0.2476639 \\
+ & 4000  & 0.0074473 & 0.0034324 & 2.1697063 & 0.2712133 \\
+ & 8000  & 0.0306334 & 0.0101682 & 3.0126669 & 0.3765834 \\
+ & 16000 & 0.1232309 & 0.0352589 & 3.4950296 & 0.4368787 \\
+ & 32000 & 0.4938257 & 0.1340204 & 3.6847055 & 0.4608882 \\
+\end{longtable}
+\end{center}
+
+
+% -----------------------------------------------------------------
+% FIGURA 1: Tiempo de Ejecución (Secuencial vs. Paralelo) - Parte II
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Tiempo de Ejecución: Secuencial vs. Paralelo ($N = 32000$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Tiempo de ejecución (s)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=0.7,
+    xtick={1, 2, 4, 8},
+    ytick={0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
+    legend pos=north east
+]
+
+% Línea de base: Tiempo Secuencial constante (t_seq = 0.4938 s)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt,
+    domain=1:8,
+    samples=2
+]
+{0.4938257};
+\addlegendentry{Tiempo Secuencial ($0.4938\text{ s}$)}
+
+% Curva de Tiempo Paralelo (t_par)
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 0.5978966)
+    (2, 0.2474600)
+    (4, 0.1410353)
+    (8, 0.1340204)
+};
+\addlegendentry{Tiempo Paralelo}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Comparación del tiempo de ejecución entre la versión secuencial y la versión paralela para $N = 32000$ con $P \in \{1, 2, 4, 8\}$ hilos.}
+\label{fig:tiempo_secuencial_vs_paralelo_parte2}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+% FIGURA 2: Speedup Experimental vs. Ideal - Parte II
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Speedup Experimental vs. Ideal ($N = 32000$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Speedup ($S_P$)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=8,
+    xtick={1, 2, 4, 8},
+    ytick={0, 1, 2, 3, 4, 5, 6, 7, 8},
+    legend pos=north west
+]
+
+% Speedup Ideal (Referencia teórica)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1)
+    (2, 2)
+    (4, 4)
+    (8, 8)
+};
+\addlegendentry{Speedup Ideal ($S_P = P$)}
+
+% Speedup Experimental
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 0.8259)
+    (2, 1.9956)
+    (4, 3.5014)
+    (8, 3.6847)
+};
+\addlegendentry{Speedup Experimental}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Escalabilidad del Speedup experimental obtenido para $N = 32000$ frente a la aceleración lineal ideal.}
+\label{fig:speedup_parte2}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+% FIGURA 3: Eficiencia Paralela - Parte II
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Eficiencia Paralela ($N = 32000$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Eficiencia ($E_P$)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=1.1,
+    xtick={1, 2, 4, 8},
+    ytick={0, 0.2, 0.4, 0.6, 0.8, 1.0},
+    yticklabels={0\%, 20\%, 40\%, 60\%, 80\%, 100\%},
+    legend pos=south west
+]
+
+% Eficiencia Ideal (100%)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt,
+    domain=1:8,
+    samples=2
+]
+{1.0};
+\addlegendentry{Eficiencia Ideal ($100\%$)}
+
+% Eficiencia Experimental
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 0.8259)
+    (2, 0.9978)
+    (4, 0.8754)
+    (8, 0.4609)
+};
+\addlegendentry{Eficiencia Experimental}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Degradación de la eficiencia paralela por hilo al escalar de $P=1$ a $P=8$ hilos en $N = 32000$.}
+\label{fig:eficiencia_parte2}
+\end{figure}
+
+
+
+\begin{table}[H]
+\centering
+\caption{Resumen comparativo de \textit{Speedup} ($S$) para la multiplicación matriz-vector.}
+\label{tab:resumen_speedup_mat_vect}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{crrrr}
+\hline
+\textbf{$N$} & \textbf{$P = 1$} & \textbf{$P = 2$} & \textbf{$P = 4$} & \textbf{$P = 8$} \\ \hline
+1000  & 0.28600 & 0.87322 & 0.79378 & 0.57757 \\
+2000  & 0.66646 & 1.10207 & 1.43233 & 1.98131 \\
+4000  & 0.88572 & 1.60023 & 1.74471 & 2.16971 \\
+8000  & 0.95303 & 2.02859 & 2.76652 & 3.01267 \\
+16000 & 1.01228 & 2.01338 & 3.14171 & 3.49503 \\
+32000 & 0.82594 & 1.99558 & 3.50143 & 3.68471 \\ \hline
+\end{tabular}
+\end{table}
+
+\subsection{Análisis de los Datos Experimentales}
+\begin{itemize}
+    \item \textbf{Impacto de Cargas Pequeñas ($N \le 2000$):} Para $N = 1000$, la versión secuencial supera a todas las variantes paralelas. El sobrecosto de invocación de \texttt{pthread\_create} y \texttt{pthread\_join} degrada la eficiencia por debajo del $20\%$ con 4 hilos y del $8\%$ con 8 hilos.
+    \item \textbf{Aceleración Casi Ideal con $P = 2$:} A partir de $N = 8000$, la versión con 2 hilos alcanza un \textit{Speedup} óptimo de $S \approx 2.03$ (eficiencia cercana al $100\%$), demostrando que la partición por filas es balanceada e independiente.
+    \item \textbf{Saturación por Ancho de Banda de Memoria ($P = 8$):} Con 8 hilos y matrices grandes ($N = 32000$), el \textit{Speedup} máximo alcanzado es de $3.68$, con una eficiencia que desciende al $46\%$. Esto se explica por la saturación de la memoria RAM y el caché L3 (\textit{memory wall}), ya que los 8 hilos compiten simultáneamente por leer la matriz en memoria.
+\end{itemize}
+
+
+
+
+
+
+
+
+
+\section{Parte III — Lista Enlazada Multithreading}
+
+\subsection{Estrategia de Implementación e Identificación de Secciones Críticas}
+Para evaluar los problemas de concurrencia en estructuras de datos dinámicas, se implementó una lista simplemente enlazada compartida entre múltiples hilos de Pthreads. Cada hilo ejecuta un conjunto de operaciones en tres fases:
+\begin{enumerate}
+    \item \textbf{Inserción:} Agrega $N / P$ elementos al inicio de la lista (\texttt{head}).
+    \item \textbf{Búsqueda:} Verifica la existencia de $N / (2P)$ elementos mediante la función \texttt{contains()}.
+    \item \textbf{Eliminación:} Remueve $N / (2P)$ elementos mediante la función \texttt{remove()}.
+\end{enumerate}
+
+Para garantizar la atomicidad en la versión sincronizada, se utilizó un cerrojo mutex global (\texttt{pthread\_mutex\_t pMutex}). Este cerrojo protege el puntero \texttt{head} y los punteros de enlace \texttt{next} de cada nodo durante cualquier modificación o lectura.
+
+\subsection{Análisis de Sincronización y Condiciones de Carrera}
+\begin{itemize}
+    \item \textbf{Variables Compartidas:} El puntero principal de la lista \texttt{head} y la estructura dinámica de nodos en memoria HEAP (\texttt{Node*}, incluyendo los miembros \texttt{val} y \texttt{next}).
+    \item \textbf{Variables Privadas:} Los contadores de bucle locales, los punteros auxiliares \texttt{curr} y \texttt{prev}, y el identificador de cada hilo (\texttt{threadId}).
+    \item \textbf{Sección Crítica:} Toda la extensión de las funciones \texttt{insert()}, \texttt{contains()}, \texttt{remove()} y \texttt{count()} constituye una sección crítica. En la versión no sincronizada, la modificación concurrente de punteros por múltiples hilos produce condiciones de carrera (\textit{race conditions}).
+\end{itemize}
+
+\subsection{Respuestas a Preguntas de Análisis}
+\begin{enumerate}
+    \item \textbf{¿Qué condición de carrera puede producirse?}
+    Se producen dos problemas graves:
+    \begin{itemize}
+        \item \textbf{Actualización perdida (\textit{Lost Updates}):} Cuando dos hilos intentan insertar simultáneamente, ambos leen el mismo puntero \texttt{head} original, asignan \texttt{newNode->next = head} y reescriben \texttt{head} de forma competitiva. El hilo cuya escritura prevalezca desconecta e invisibiliza el nodo insertado por el otro hilo.
+        \item \textbf{Punteros colgados (\textit{Dangling Pointers}) y Fugas de Memoria:} Al eliminar nodos concurrentemente, un hilo puede liberar la memoria de un nodo con \texttt{delete} mientras otro hilo intenta leer su campo \texttt{next}, provocando un fallo de segmentación (\textit{segmentation fault}) o corrupción de memoria.
+    \end{itemize}
+
+    \item \textbf{¿Qué datos o estructuras son compartidos?}
+    Toda la estructura de la lista enlazada es compartida: la cabecera \texttt{head} y la secuencia de punteros \texttt{next} alojados dinámicamente en el \textit{heap}.
+
+    \item \textbf{¿Qué secciones requieren protección?}
+    Requieren protección absoluta todas las lecturas y escrituras en el puntero \texttt{head} y los recorridos de punteros \texttt{next}. Incluso las operaciones de solo lectura como \texttt{contains()} o \texttt{count()} deben protegerse si existen escrituras concurrentes, para evitar la lectura de punteros que estén siendo modificados o liberados.
+
+    \item \textbf{¿Qué ocurre si se utiliza un único mutex para toda la lista?}
+    Se aplica un bloqueo de grano grueso. Esto fuerza una serialización completa de todas las operaciones de la lista: solo un hilo puede interactuar con la lista a la vez. Aunque garantiza la consistencia, elimina el paralelismo real y genera contención por cerrojos.
+
+    \item \textbf{¿Qué relación existe entre granularidad del bloqueo y paralelismo?}
+    A mayor granularidad del bloqueo (un único cerrojo global), menor es el paralelismo obtenido y mayor la contención entre hilos. A menor granularidad (por ejemplo, bloqueo individual por nodo o \textit{hand-over-hand locking}), aumenta el paralelismo al permitir que distintos hilos trabajen concurrentemente en partes disjuntas de la lista, a costa de un código más complejo y un mayor sobrecosto por gestión de múltiples cerrojos.
+
+    \item \textbf{¿Cómo afecta la sincronización al rendimiento?}
+    La sincronización introduce una penalización de rendimiento sustancial debido al sobrecosto de adquisición/liberación de cerrojos (\textit{mutex lock/unlock}) y la espera pasiva en el núcleo del sistema operativo. Sin embargo, es strictly necesaria: la ejecución sin sincronización muestra mejores tiempos aparentes pero entrega resultados incorrectos y corruptos.
+\end{enumerate}
+
+\subsection{Resultados Experimentales y Tablas}
+
+A continuación se presentan los resultados obtenidos para la lista enlazada ejecutando $N$ operaciones totales. El número esperado de nodos al finalizar el experimento es exactamente $N / 2$.
+
+\begin{table}[htbp]
+\centering
+\caption{Resultados con sincronización (Mutex global).}
+\label{tab:resultados_lista_sync}
+\small
+\begin{tabular}{ccrrrrc}
+\toprule
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{$t_{seq}$ (s)} & \textbf{$t_{par}$ (s)} & \textbf{Speedup ($S$)} & \textbf{Eficiencia ($E$)} & \textbf{Nodos Finales} \\
+\midrule
+\multirow{4}{*}{1} 
+ & 10000 & 0.0542378 & 0.1060590 & 0.5113927 & 0.5113927 & 5000 \\
+ & 20000 & 0.2343043 & 0.4779832 & 0.4901936 & 0.4901936 & 10000 \\
+ & 40000 & 1.3549249 & 2.4942312 & 0.5432235 & 0.5432235 & 20000 \\
+ & 80000 & 5.4770651 & 9.8756192 & 0.5546047 & 0.5546047 & 40000 \\
+\midrule
+\multirow{4}{*}{2} 
+ & 10000 & 0.0542378 & 0.0955212 & 0.5678090 & 0.2839045 & 5000 \\
+ & 20000 & 0.2343043 & 0.4005181 & 0.5850030 & 0.2925015 & 10000 \\
+ & 40000 & 1.3549249 & 2.5700853 & 0.5271906 & 0.2635953 & 20000 \\
+ & 80000 & 5.4770651 & 9.9293672 & 0.5516026 & 0.2758013 & 40000 \\
+\midrule
+\multirow{4}{*}{4} 
+ & 10000 & 0.0542378 & 0.0713671 & 0.7599832 & 0.1899958 & 5000 \\
+ & 20000 & 0.2343043 & 0.2428648 & 0.9647520 & 0.2411880 & 10000 \\
+ & 40000 & 1.3549249 & 2.3675000 & 0.5723020 & 0.1430755 & 20000 \\
+ & 80000 & 5.4770651 & 9.9495876 & 0.5504816 & 0.1376204 & 40000 \\
+\midrule
+\multirow{4}{*}{8} 
+ & 10000 & 0.0542378 & 0.0495727 & 1.0941062 & 0.1367633 & 5000 \\
+ & 20000 & 0.2343043 & 0.3766816 & 0.6220222 & 0.0777528 & 10000 \\
+ & 40000 & 1.3549249 & 1.5931539 & 0.8504671 & 0.1063084 & 20000 \\
+ & 80000 & 5.4770651 & 8.1712632 & 0.6702838 & 0.0837855 & 40000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Resultados sin sincronización (Condición de carrera e inconsistencia).}
+\label{tab:resultados_lista_nosync}
+\small
+\begin{tabular}{ccrrrrc}
+\toprule
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{$t_{seq}$ (s)} & \textbf{$t_{par}$ (s)} & \textbf{Speedup ($S$)} & \textbf{Eficiencia ($E$)} & \textbf{Nodos Finales (Esperado $N/2$)} \\
+\midrule
+\multirow{4}{*}{2} 
+ & 10000 & 0.0542378 & 0.0518867 & 1.0453122 & 0.5226561 & 4970 (Inconsistente) \\
+ & 20000 & 0.2343043 & 0.2294267 & 1.0212599 & 0.5106300 & 9900 (Inconsistente) \\
+ & 40000 & 1.3549249 & 1.2098694 & 1.1198935 & 0.5599468 & 19764 (Inconsistente) \\
+ & 80000 & 5.4770651 & 4.8662519 & 1.1255203 & 0.5627601 & 39814 (Inconsistente) \\
+\midrule
+\multirow{4}{*}{4} 
+ & 10000 & 0.0542378 & 0.0219980 & 2.4655787 & 0.6163947 & 4824 (Inconsistente) \\
+ & 20000 & 0.2343043 & 0.1169699 & 2.0031162 & 0.5007790 & 8530 (Inconsistente) \\
+ & 40000 & 1.3549249 & 0.6543424 & 2.0706665 & 0.5176666 & 18728 (Inconsistente) \\
+ & 80000 & 5.4770651 & 2.6634478 & 2.0563816 & 0.5140954 & 38156 (Inconsistente) \\
+\midrule
+\multirow{4}{*}{8} 
+ & 10000 & 0.0542378 & 0.0087767 & 6.1797487 & 0.7724686 & 4598 (Inconsistente) \\
+ & 20000 & 0.2343043 & 0.0474455 & 4.9383883 & 0.6172985 & 7526 (Inconsistente) \\
+ & 40000 & 1.3549249 & 0.3375350 & 4.0141760 & 0.5017720 & 16566 (Inconsistente) \\
+ & 80000 & 5.4770651 & 1.2303309 & 4.4517005 & 0.5564626 & 31599 (Inconsistente) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+
+% -----------------------------------------------------------------
+% FIGURA 1: Tiempo de Ejecución (Con Mutex vs. Sin Mutex)
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Tiempo de Ejecución: Con vs. Sin Sincronización ($N = 80000$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Tiempo de ejecución (s)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=12,
+    xtick={1, 2, 4, 8},
+    ytick={0, 2, 4, 6, 8, 10, 12},
+    legend pos=north east
+]
+
+% Referencia: Tiempo Secuencial constante (t_seq = 5.4771 s)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt,
+    domain=1:8,
+    samples=2
+]
+{5.4770651};
+\addlegendentry{Tiempo Secuencial ($5.48\text{ s}$)}
+
+% Versión Con Mutex (Sincronizado)
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 9.8756)
+    (2, 9.9294)
+    (4, 9.9496)
+    (8, 8.1713)
+};
+\addlegendentry{Con Mutex (Sincronizado)}
+
+% Versión Sin Mutex (No Sincronizado - Rendimiento engañoso)
+\addplot[
+    color=red!70!black,
+    mark=square*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 5.4771)
+    (2, 4.8663)
+    (4, 2.6634)
+    (8, 1.2303)
+};
+\addlegendentry{Sin Mutex (Inconsistente)}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Comparación del tiempo de ejecución con y sin sincronización por cerrojos para $N = 80000$.}
+\label{fig:tiempo_lista_parte3}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+% FIGURA 2: Speedup Experimental (Con Mutex vs. Sin Mutex)
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Speedup Experimental: Con vs. Sin Sincronización ($N = 80000$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Speedup ($S_P$)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=8,
+    xtick={1, 2, 4, 8},
+    ytick={0, 1, 2, 3, 4, 5, 6, 7, 8},
+    legend pos=north west
+]
+
+% Speedup Ideal (Referencia teórica)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1)
+    (2, 2)
+    (4, 4)
+    (8, 8)
+};
+\addlegendentry{Speedup Ideal ($S_P = P$)}
+
+% Speedup Con Mutex (Cuello de botella)
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 0.5546)
+    (2, 0.5516)
+    (4, 0.5505)
+    (8, 0.6703)
+};
+\addlegendentry{Con Mutex ($S < 1$)}
+
+% Speedup Sin Mutex (Falsa aceleración)
+\addplot[
+    color=red!70!black,
+    mark=square*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1.0000)
+    (2, 1.1255)
+    (4, 2.0564)
+    (8, 4.4517)
+};
+\addlegendentry{Sin Mutex (Datos corruptos)}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Impacto del cerrojo global en el Speedup. La versión con Mutex muestra una pérdida severa de aceleración ($S < 1$) por contención de cerrojos.}
+\label{fig:speedup_lista_parte3}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+% FIGURA 3: Eficiencia Paralela (Con Mutex vs. Sin Mutex)
+% -----------------------------------------------------------------
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    title={\textbf{Eficiencia Paralela: Con vs. Sin Sincronización ($N = 80000$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Eficiencia ($E_P$)},
+    xmin=1, xmax=8,
+    ymin=0, ymax=1.1,
+    xtick={1, 2, 4, 8},
+    ytick={0, 0.2, 0.4, 0.6, 0.8, 1.0},
+    yticklabels={0\%, 20\%, 40\%, 60\%, 80\%, 100\%},
+    legend pos=north east
+]
+
+% Eficiencia Ideal (100%)
+\addplot[
+    color=gray!80!black,
+    dashed,
+    line width=1.2pt,
+    domain=1:8,
+    samples=2
+]
+{1.0};
+\addlegendentry{Eficiencia Ideal ($100\%$)}
+
+% Eficiencia Con Mutex
+\addplot[
+    color=blue!70!black,
+    mark=*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 0.5546)
+    (2, 0.2758)
+    (4, 0.1376)
+    (8, 0.0838)
+};
+\addlegendentry{Con Mutex (Sincronizado)}
+
+% Eficiencia Sin Mutex
+\addplot[
+    color=red!70!black,
+    mark=square*,
+    mark size=2.5pt,
+    line width=1.2pt
+]
+coordinates {
+    (1, 1.0000)
+    (2, 0.5628)
+    (4, 0.5141)
+    (8, 0.5565)
+};
+\addlegendentry{Sin Mutex (Inconsistente)}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Degradación abrupta de la eficiencia paralela al usar Mutex global debido al tiempo gastado en espera pasiva por bloqueo.}
+\label{fig:eficiencia_lista_parte3}
+\end{figure}
+
+
+\subsection{Análisis de los Datos Experimentales}
+\begin{itemize}
+    \item \textbf{Consistencia vs. Corrección de Datos:} En la versión sincronizada con cerrojo global, el recuento final de nodos es $100\%$ correcto para todas las configuraciones ($N/2$ nodos exactos). Por el contrario, la versión sin sincronización pierde cientos de nodos por actualizaciones competitivas no atómicas (por ejemplo, para $N = 80000$ con $P = 8$ hilos, solo sobrevivieron 31,599 nodos de los 40,000 esperados).
+    \item \textbf{Cuello de Botella por Cerrojo Global ($S < 1$):} En la ejecución sincronizada, el \textit{Speedup} se mantiene por debajo de 1 en casi todas las configuraciones ($S \approx 0.5 - 0.7$). Esto demuestra empíricamente que la sincronización de grano grueso destruye el paralelismo: los hilos pasan la mayor parte del tiempo bloqueados esperando la liberación de \texttt{pMutex}.
+    \item \textbf{La Falsa Alta Eficiencia Sin Sincronización:} La versión sin cerrojos muestra aceleraciones engañosas (hasta $S = 6.18$ con 8 hilos), ya que los hilos no experimentan pausas por bloqueo. Sin embargo, este rendimiento es ilusorio debido a la corrupción de la lista enlazada.
+\end{itemize}
+
+
+
+
+
+\section{Parte IV — Implementación de Barreras}
+
+\subsection{Estrategia de Implementación y Mecanismos de Barreras}
+Una barrera de sincronización es un punto de encuentro en la ejecución paralela donde ningún hilo puede avanzar a la siguiente fase de cómputo hasta que la totalidad de los hilos participantes haya alcanzado dicho punto. Para evaluar este comportamiento, se dividió el algoritmo de aproximación de \texorpdfstring{$\pi$}{pi} mediante la serie de Leibniz en dos fases distintas dentro de las funciones de hilo (\texttt{leibniz\_busy}, \texttt{leibniz\_semaphore} y \texttt{leibniz\_condition}):
+
+\begin{enumerate}
+    \item \textbf{Fase 1:} Cálculo de la primera mitad del rango asignado ($[i_{inicio}, i_{inicio} + \text{size}/2)$).
+    \item \textbf{Sincronización por Barrera:} Invocación a la función de barrera seleccionada.
+    \item \textbf{Fase 2:} Cálculo de la segunda mitad del rango asignado ($[i_{inicio} + \text{size}/2, i_{fin})$).
+\end{enumerate}
+
+A continuación se explican los tres mecanismos de barrera implementados en el programa \texttt{pi\_barriers.cpp}:
+
+\subsubsection{1. Barrera con Espera Activa y Mutex (\texttt{busyBarrier})}
+\begin{itemize}
+    \item \textbf{Mecanismo:} Emplea una variable contador global (\texttt{busyCounter}) y un cerrojo mutex (\texttt{busyMutex}). Al ingresar a la barrera, cada hilo incrementa atómicamente el contador protegiendo el acceso con \texttt{pthread\_mutex\_lock} y \texttt{pthread\_mutex\_unlock}.
+    \item \textbf{Mecanismo de Espera:} Los hilos entran en un bucle infinito de sondeo activo (\textit{busy-waiting} o \textit{spin-lock}), en el cual adquieren repetidamente el mutex para verificar si la condición \texttt{busyCounter == nThreads} se ha cumplido, liberando el cerrojo de inmediato en cada iteración.
+    \item \textbf{Condición de Liberación:} La barrera permite la salida del bucle cuando la condición \texttt{busyCounter == nThreads} evalúa como verdadera.
+\end{itemize}
+
+\subsubsection{2. Barrera con Semáforos (\texttt{semaphoreBarrier})}
+\begin{itemize}
+    \item \textbf{Mecanismo:} Utiliza un semáforo binario de control de acceso (\texttt{countSem}, inicializado en $1$) para proteger la variable compartida \texttt{semCounter}, y un semáforo de bloqueo (\texttt{barrierSem}, inicializado en $0$).
+    \item \textbf{Mecanismo de Espera:} Cuando un hilo llega, decrementa \texttt{countSem} mediante \texttt{sem\_wait}. Si no es el último hilo en llegar, incrementa \texttt{semCounter}, libera \texttt{countSem} y se bloquea en \texttt{sem\_wait(\&barrierSem)}, pasando a un estado de reposo gestionado por el sistema operativo.
+    \item \textbf{Condición de Liberación:} El último hilo ($N$-ésimo) en ingresar detecta que \texttt{semCounter == nThreads - 1}. En este punto, reinicia \texttt{semCounter = 0}, libera \texttt{countSem} y ejecuta un bucle con $N - 1$ señalizaciones (\texttt{sem\_post(\&barrierSem)}), despertando a cada uno de los hilos suspendidos.
+\end{itemize}
+
+\subsubsection{3. Barrera con Variable de Condición (\texttt{conditionBarrier})}
+\begin{itemize}
+    \item \textbf{Mecanismo:} Hace uso de una estructura estándar POSIX compuesta por un cerrojo mutex (\texttt{condMutex}) y una variable de condición (\texttt{condVar}).
+    \item \textbf{Mecanismo de Espera:} Cada hilo adquiere \texttt{condMutex} e incrementa \texttt{condCounter}. Si la cuenta no ha alcanzado el número total de hilos, el hilo invoca \texttt{pthread\_cond\_wait(\&condVar, \&condMutex)}, lo que libera atómicamente el mutex y suspende el hilo sin consumo de CPU.
+    \item \textbf{Condición de Liberación:} Al llegar el último hilo (\texttt{condCounter == nThreads}), este reinicia \texttt{condCounter = 0} y emite un \texttt{pthread\_cond\_broadcast(\&condVar)}, enviando una señal de difusión que desbloquea de manera simultánea a todos los hilos en espera antes de liberar \texttt{condMutex}.
+\end{itemize}
+
+\subsection{Respuestas a Preguntas de Análisis}
+\begin{enumerate}
+    \item \textbf{¿Qué mecanismo de sincronización utiliza cada implementación?}
+    \begin{itemize}
+        \item \textit{Busy-Waiting:} Un cerrojo mutex para exclusión mutua combinado con un bucle activo de consulta de variable (\textit{spin-lock}).
+        \item \textit{Semáforos:} Un semáforo contador para proteger la sección crítica del contador y un semáforo de señalización para bloquear/desbloquear hilos.
+        \item \textit{Variable de Condición:} Un mutex para proteger el estado de la barrera y una variable de condición POSIX (\texttt{pthread\_cond\_t}) con operaciones de bloqueo y difusión.
+    \end{itemize}
+
+    \item \textbf{¿Cuál es la diferencia conceptual entre las tres alternativas?}
+    La diferencia radica en cómo gestionan el tiempo de espera los hilos no liberados:
+    \begin{itemize}
+        \item En \textbf{Espera Activa}, los hilos permanecen ejecutando ciclos en la CPU, consumiendo recursos de procesamiento de forma improductiva.
+        \item En \textbf{Semáforos}, la espera es pasiva; el sistema operativo suspende los hilos, pero la liberación es en serie (el último hilo debe realizar $P-1$ llamados a \texttt{sem\_post}).
+        \item En \textbf{Variables de Condición}, la espera también es pasiva, pero la notificación es colectiva mediante un único llamado \textit{broadcast} que notifica a toda la cola de hilos.
+    \end{itemize}
+
+    \item \textbf{¿Qué ventajas y desventajas presenta cada una?}
+    \begin{itemize}
+        \item \textbf{Busy-Waiting:}
+        \textit{Ventaja:} Latencia muy baja para reanudar si el tiempo de espera es mínimo.
+        \textit{Desventaja:} Consumo masivo de energía y CPU ($100\%$ de uso por núcleo en espera) y severa contención sobre el mutex.
+        \item \textbf{Semáforos:}
+        \textit{Ventaja:} Eficiente consumo de CPU al suspender hilos en reposo.
+        \textit{Desventaja:} Sobrecosto secuencial al despertar los hilos uno a uno mediante bucle en el hilo principal.
+        \item \textbf{Variable de Condición:}
+        \textit{Ventaja:} Espera pasiva eficiente, alta escalabilidad y liberación simultánea de hilos con \texttt{pthread\_cond\_broadcast}. Es el estándar recomendado en POSIX.
+        \textit{Desventaja:} Ligeramente más complejo en la lógica de control.
+    \end{itemize}
+
+    \item \textbf{¿Cómo afecta la cantidad de threads al comportamiento de la barrera?}
+    Con un único hilo ($P=1$), las barreras no generan sobrecosto al no existir esperas. Con pocos hilos ($P=2, 4$), los tiempos de ejecución entre los tres métodos son muy similares para cargas computacionales altas ($N \ge 10^7$). Sin embargo, al escalar a $P=8$ hilos, la variable de condición obtiene el menor tiempo de ejecución ($0.0279$ s para $N=10^8$), superando a la espera activa ($0.0305$ s) y a los semáforos ($0.0304$ s), demostrando la eficiencia del método de difusión masiva frente a la contención por cerrojos y desatamiento en serie.
+\end{enumerate}
+
+\subsection{Resultados Experimentales y Tablas}
+
+A continuación se presentan las mediciones obtenidas para las tres técnicas de barrera ejecutando el cálculo de \texorpdfstring{$\pi$}{pi} dividido en dos fases para $P \in \{1, 2, 4, 8\}$ hilos y $N \in \{10^1, 10^2, \dots, 10^8\}$.
+
+\renewcommand{\arraystretch}{1.25}
+\small
+\begin{longtable}{ccrrr}
+\caption{Tiempos de ejecución (en segundos) para las tres implementaciones de barrera.} \label{tab:resultados_barreras} \\
+\hline
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{Busy-Wait (s)} & \textbf{Semáforo (s)} & \textbf{Var. Condición (s)} \\ \hline
+\endfirsthead
+
+\multicolumn{5}{c}{\small \textit{Cuadro \thetable{} -- Continuación de la página anterior}} \\[0.5em]
+\hline
+\textbf{Hilos ($P$)} & \textbf{$N$} & \textbf{Busy-Wait (s)} & \textbf{Semáforo (s)} & \textbf{Var. Condición (s)} \\ \hline
+\endhead
+
+\hline
+\multicolumn{5}{r}{\textit{Continúa en la siguiente página...}} \\
+\endfoot
+
+\hline
+\endlastfoot
+
+\multirow{8}{*}{1} 
+ & $10^1$ & 0.0004365 & 0.0001566 & 0.0001428 \\
+ & $10^2$ & 0.0001452 & 0.0001629 & 0.0001121 \\
+ & $10^3$ & 0.0001321 & 0.0001562 & 0.0001243 \\
+ & $10^4$ & 0.0001554 & 0.0001349 & 0.0001683 \\
+ & $10^5$ & 0.0002647 & 0.0002529 & 0.0002502 \\
+ & $10^6$ & 0.0013756 & 0.0017103 & 0.0015352 \\
+ & $10^7$ & 0.0131758 & 0.0138458 & 0.0138659 \\
+ & $10^8$ & 0.1328460 & 0.1342822 & 0.1339955 \\ \hline
+\multirow{8}{*}{2} 
+ & $10^1$ & 0.0002619 & 0.0002056 & 0.0002026 \\
+ & $10^2$ & 0.0001998 & 0.0001494 & 0.0001983 \\
+ & $10^3$ & 0.0002056 & 0.0002274 & 0.0001669 \\
+ & $10^4$ & 0.0002062 & 0.0001812 & 0.0001724 \\
+ & $10^5$ & 0.0002666 & 0.0002516 & 0.0002128 \\
+ & $10^6$ & 0.0007998 & 0.0008606 & 0.0008120 \\
+ & $10^7$ & 0.0067239 & 0.0066940 & 0.0066386 \\
+ & $10^8$ & 0.0688550 & 0.0680605 & 0.0693010 \\ \hline
+\multirow{8}{*}{4} 
+ & $10^1$ & 0.0003770 & 0.0003456 & 0.0003637 \\
+ & $10^2$ & 0.0003096 & 0.0002863 & 0.0003235 \\
+ & $10^3$ & 0.0002916 & 0.0002595 & 0.0002692 \\
+ & $10^4$ & 0.0002862 & 0.0002608 & 0.0002750 \\
+ & $10^5$ & 0.0003196 & 0.0003514 & 0.0003099 \\
+ & $10^6$ & 0.0006255 & 0.0006401 & 0.0006523 \\
+ & $10^7$ & 0.0037377 & 0.0038764 & 0.0036917 \\
+ & $10^8$ & 0.0358862 & 0.0376357 & 0.0353448 \\ \hline
+\multirow{8}{*}{8} 
+ & $10^1$ & 0.0006702 & 0.0004928 & 0.0005282 \\
+ & $10^2$ & 0.0005185 & 0.0006208 & 0.0004681 \\
+ & $10^3$ & 0.0005314 & 0.0004740 & 0.0004509 \\
+ & $10^4$ & 0.0005285 & 0.0004797 & 0.0004627 \\
+ & $10^5$ & 0.0005472 & 0.0004500 & 0.0004351 \\
+ & $10^6$ & 0.0007311 & 0.0006904 & 0.0006836 \\
+ & $10^7$ & 0.0037293 & 0.0036489 & 0.0034049 \\
+ & $10^8$ & 0.0304801 & 0.0304095 & 0.0279178 \\
+\end{longtable}
+
+\begin{table}[H]
+\centering
+\caption{Resumen de tiempos de ejecución (s) para la carga pesada $N = 10^8$.}
+\label{tab:resumen_barreras_n108}
+\renewcommand{\arraystretch}{1.35}
+\begin{tabular}{crrr}
+\hline
+\textbf{Hilos ($P$)} & \textbf{Busy-Wait (s)} & \textbf{Semáforo (s)} & \textbf{Variable Condición (s)} \\ \hline
+1 & 0.1328460 & 0.1342822 & 0.1339955 \\
+2 & 0.0688550 & 0.0680605 & 0.0693010 \\
+4 & 0.0358862 & 0.0376357 & 0.0353448 \\
+8 & 0.0304801 & 0.0304095 & \textbf{0.0279178} \\ \hline
+\end{tabular}
+\end{table}
+
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+    miEstandar,
+    ybar,
+    bar width=8pt,
+    title={\textbf{Comparativa de Tiempos por Mecanismo ($N = 10^8$)}},
+    xlabel={Número de hilos ($P$)},
+    ylabel={Tiempo de ejecución (s)},
+    ylabel style={yshift=0.3cm},
+    scaled y ticks=false,
+    y tick label style={/pgf/number format/fixed, /pgf/number format/precision=2},
+    symbolic x coords={1, 2, 4, 8},
+    xtick=data,
+    ymin=0, ymax=0.15,
+    ytick={0, 0.03, 0.06, 0.09, 0.12, 0.15},
+    legend pos=north east,
+    enlarge x limits=0.2
+]
+
+% Busy-Wait
+\addplot[fill=red!60!white, draw=red!80!black] 
+coordinates {
+    (1, 0.1328460)
+    (2, 0.0688550)
+    (4, 0.0358862)
+    (8, 0.0304801)
+};
+\addlegendentry{Busy-Wait}
+
+% Semáforo
+\addplot[fill=teal!60!white, draw=teal!80!black] 
+coordinates {
+    (1, 0.1342822)
+    (2, 0.0680605)
+    (4, 0.0376357)
+    (8, 0.0304095)
+};
+\addlegendentry{Semáforo}
+
+% Variable Condición
+\addplot[fill=blue!60!white, draw=blue!80!black] 
+coordinates {
+    (1, 0.1339955)
+    (2, 0.0693010)
+    (4, 0.0353448)
+    (8, 0.0279178)
+};
+\addlegendentry{Variable Condición}
+
+\end{axis}
+\end{tikzpicture}
+\caption{Comparación de tiempos de ejecución en barras agrupadas para $N = 10^8$.}
+\label{fig:cuadro8_barras}
+\end{figure}
+
+
+
+\subsection{Análisis de los Datos Experimentales de Barreras}
+\begin{itemize}
+    \item \textbf{Cálculo de \texorpdfstring{$\pi$}{pi} con precisión constante:} En todos los casos probados, la precisión alcanzada fue $\pi \approx 3.1415926$ para $N = 10^8$, confirmando que la separación en dos fases y la sincronización por barrera no afectó la exactitud numérica.
+    \item \textbf{Desempeño con $P=8$ Hilos:} Para $N = 10^8$, la variable de condición fue la más rápida ($0.0279178$ s), superando por aproximadamente un $8.4\%$ al Busy-Wait ($0.0304801$ s) y al Semáforo ($0.0304095$ s).
+    \item \textbf{Impacto de la sobrecarga de sincronización en $N \le 10^5$:} Para valores pequeños de $N$, el tiempo de inicialización de la barrera y creación de hilos domina la ejecución ($0.0002$ a $0.0006$ s).
+\end{itemize}
+
+\section{Resultados Experimentales y Análisis Global}
+
+A través de las cuatro partes desarrolladas en esta práctica de laboratorio, se observan tres comportamientos fundamentales de la programación paralela con Pthreads:
+
+\begin{enumerate}
+    \item \textbf{El Dominio de la Granularidad del Cómputo (Leyes de Amdahl y Gustafson):}
+    En problemas altamente computacionales sin contención de datos (como el cálculo de $\pi$), la paralelización ofrece un \textit{Speedup} casi lineal para $P=2$ hilos ($S \approx 1.94$) y un máximo de $S \approx 5.15$ para $P=8$ hilos en $N=10^{10}$. En cargas pequeñas, la sobrecarga fija de creación de hilos arruina la eficiencia.
+
+    \item \textbf{El Cuello de Botella de Memoria (\textit{Memory Wall}):}
+    En la multiplicación matriz-vector, aunque no existen secciones críticas ni uso de mutexes, la ganancia al pasar de 4 a 8 hilos en matrices grandes ($N = 32000$) se estanca ($S = 3.50 \to 3.68$). Esto responde a la saturación del ancho de banda del bus de memoria RAM.
+
+    \item \textbf{Sincronización de Grano Grueso vs. Desempeño:}
+    En estructuras dinámicas compartidas (lista enlazada), la adición de un cerrojo mutex global garantiza la exactitud ($100\%$ de nodos correctos), pero degrada el \textit{Speedup} por debajo de 1 ($S \approx 0.55$) debido a la serialización estricta.
+\end{enumerate}
+
+\section{Problemas Encontrados y Soluciones}
+
+\begin{itemize}
+    \item \textbf{Problema 1: Inconsistencia y corrupción de punteros en la Lista Enlazada.}
+    \textit{Descripción:} En la versión multihilo sin cerrojos ocurrieron actualizaciones perdidas (\textit{lost updates}) e inconsistencias.
+    \textit{Solución:} Se encapsularon las operaciones dentro de una sección crítica protegida por \texttt{pthread\_mutex\_lock} y \texttt{pthread\_mutex\_unlock}.
+
+    \item \textbf{Problema 2: Consumo excesivo de CPU en la espera por barrera.}
+    \textit{Descripción:} La versión de barrera por \textit{busy-waiting} provocaba un uso del $100\%$ de CPU por núcleo.
+    \textit{Solución:} Se implementó la sincronización con \texttt{pthread\_cond\_wait} y \texttt{pthread\_cond\_broadcast}.
+
+    \item \textbf{Problema 3: Manejo del residuo en la división de trabajo.}
+    \textit{Descripción:} Cuando la dimensión del problema ($N$) no es divisible por el número de hilos ($P$), quedaban iteraciones sin procesar.
+    \textit{Solución:} Se aplicó distribución por bloques donde el último hilo absorbe el residuo (\texttt{size \% nThreads}).
+\end{itemize}
+
+\section{Conclusiones}
+
+\begin{enumerate}
+    \item La programación paralela mediante Pthreads permite acelerar significativamente la resolución de algoritmos intensivos en cálculo cuando la carga por hilo justifica los sobrecostos.
+    \item La presencia de secciones críticas requiere exclusión mutua, pero la granularidad de los bloqueos debe diseñarse cuidadosamente para evitar serializar la ejecución.
+    \item La multiplicación matriz-vector demuestra que la ausencia de contiendas por cerrojos no garantiza un \textit{Speedup} lineal debido a las limitaciones del ancho de banda de memoria.
+    \item Entre los mecanismos de barrera evaluados, las variables de condición ofrecen el mejor balance entre consumo nulo de CPU en reposo y eficiencia en la notificación colectiva mediante \textit{broadcast}.
+\end{enumerate}
+
+\end{document}
+
