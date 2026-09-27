@@ -89,7 +89,7 @@ int main() {
 
     vector<size_t> nValues;
     size_t nTemp = 1;
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < 10; i++) {
         nTemp *= 10;
         nValues.push_back(nTemp);
     }
