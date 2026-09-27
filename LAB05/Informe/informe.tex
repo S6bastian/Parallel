@@ -63,11 +63,9 @@
 
 \begin{document}
 
-\maketitle
+%\maketitle
 
-\begin{abstract}
-El presente informe documenta la implementación, evaluación y análisis del rendimiento de aplicaciones concurrentes utilizando la librería POSIX Threads (Pthreads) en C++. Se estudian cuatro problemas clave de la computación paralela: la aproximación del número $\pi$ mediante la serie de Leibniz, la multiplicación matriz-vector, una estructura de datos dinámica (lista enlazada compartida) y tres mecanismos alternativos de sincronización por barreras. Se evalúan los métricos de tiempo de ejecución, \textit{speedup} y eficiencia al variar el número de hilos ($1, 2, 4, 8$) y el tamaño del problema ($N$), analizando las causas de pérdida de aceleración, condiciones de carrera y cuellos de botella en memoria compartida.
-\end{abstract}
+
 
 \section{Introducción}
 La programación multihilo representa un paradigma fundamental para aprovechar las arquitecturas multinúcleo modernas. Sin embargo, la división de tareas en hilos concurrentes introduce desafíos críticos como la fragmentación del trabajo, la coherencia de cache, la contención de cerrojos y las condiciones de carrera (\textit{race conditions}). Este laboratorio explora la transición desde algoritmos secuenciales hacia versiones paralelas mediante Pthreads, analizando el comportamiento de la sincronización por exclusión mutua (\textit{mutex}), cerrojos de grano fino/grueso y barreras explícitas de sincronización.
